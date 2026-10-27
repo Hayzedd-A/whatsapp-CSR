@@ -1,0 +1,20 @@
+{
+  "name": "zupa-whatsapp-ai-agent",
+  "version": "0.1.0",
+  "description": "WhatsApp AI ordering agent for Gourmet Twist — a sibling service to zupa-api, zupa-crm, zupa-kitchen-app and the Slack bot.",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "nodemon src/index.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.32.1",
+    "axios": "^1.7.9",
+    "better-sqlite3": "^11.7.0",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.9"
+  }
+}
