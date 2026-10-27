@@ -20,15 +20,22 @@ npm run dev
 
 ## Deploying with PM2
 
+Runs on the same droplet as the Slack bot. That bot defaults to port 3000 (`PORT` in its own `.env`); this service defaults to `4100` — no collision, but check `pm2 list` for anything else already running there before assuming any default port is free.
+
 ```bash
 git clone git@github.com:Hayzedd-A/whatsapp-CSR.git
 cd whatsapp-CSR
-npm install --omit=dev   # better-sqlite3 compiles a native addon — needs build-essential + python3 on the server if not already present (same requirement zupa-api itself has)
+npm install --omit=dev   # better-sqlite3 compiles a native addon — needs build-essential + python3 on the server if not already present
 cp .env.example .env     # fill in real values — see below
 pm2 start ecosystem.config.js
-pm2 save                 # so it survives a reboot
-pm2 startup              # one-time, follow the printed command (only if this is the first PM2 app on the box)
+pm2 save                 # re-run this after adding the app — needed so a reboot restarts it too
 ```
+
+Skip `pm2 startup` — if the Slack bot already runs under PM2 on this box, that one-time step (registering PM2 itself with the OS's init system) has already been done; `pm2 save` alone is what picks up this new app for next boot. Only run `pm2 startup` if `pm2 list` shows nothing at all on this box yet.
+
+**Networking — this box is probably not where zupa-api runs.** The Slack bot deploys via a bare SSH script to its own droplet; zupa-api deploys as a Docker container, most likely elsewhere. That means `WHATSAPP_AGENT_BASE_URL` (set on zupa-api) needs this droplet's actual reachable address, not `localhost`. Don't expose port 4100 to the open internet as-is — the bearer-token check is the only thing guarding it otherwise. Pick one:
+- If zupa-api's host and this droplet share a cloud provider's private network/VPC, use the private IP — no public exposure at all.
+- Otherwise, put this behind a reverse proxy (nginx) with TLS, and restrict inbound access to zupa-api's IP via the droplet's firewall (`ufw`, or your cloud provider's security-group/firewall rules) — the same way you'd think about any other internal service-to-service call that happens to cross the public internet.
 
 Two things that matter specifically for this service, not just PM2 boilerplate:
 
