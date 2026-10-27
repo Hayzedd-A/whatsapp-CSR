@@ -18,6 +18,27 @@ npm run dev
 
 `WHATSAPP_AGENT_API_KEY` must match the same env var name on the zupa-api side — it's the single shared secret both directions of the integration use (zupa-api calling this service, and this service calling zupa-api).
 
+## Deploying with PM2
+
+```bash
+git clone git@github.com:Hayzedd-A/whatsapp-CSR.git
+cd whatsapp-CSR
+npm install --omit=dev   # better-sqlite3 compiles a native addon — needs build-essential + python3 on the server if not already present (same requirement zupa-api itself has)
+cp .env.example .env     # fill in real values — see below
+pm2 start ecosystem.config.js
+pm2 save                 # so it survives a reboot
+pm2 startup              # one-time, follow the printed command (only if this is the first PM2 app on the box)
+```
+
+Two things that matter specifically for this service, not just PM2 boilerplate:
+
+- **`instances: 1` in `ecosystem.config.js` is load-bearing, not a default left alone.** This service uses SQLite for session/cart state, which allows exactly one writer process. Never run this under PM2 cluster mode (`-i max` or `instances: "max"`) — two instances writing the same `.db` file will corrupt state or crash. If you ever need more throughput than one process gives you, that's a real scaling conversation (migrate off SQLite), not a PM2 flag.
+- **Set `DB_PATH` in `.env` to an absolute path outside the repo checkout** if your deploy process ever replaces the directory (fresh clone/rsync) rather than `git pull` in place — e.g. `/var/lib/whatsapp-agent/agent.db`. If you deploy by `git pull`-ing into the same persistent directory every time (the common PM2 setup), the default relative `./data/agent.db` is fine since the directory itself never disappears. Either way: losing that file loses every in-flight cart and session, so make sure whatever path you pick survives a redeploy.
+
+If this runs on the **same server as zupa-api**, point `WHATSAPP_AGENT_BASE_URL` (on zupa-api's side) at `http://localhost:<PORT>` — no public exposure, reverse proxy, or TLS needed, since the only caller is zupa-api itself on the same box. If it's on a **different server**, it needs to be reachable from wherever zupa-api runs (internal network route, or a reverse-proxied HTTPS endpoint if that's the only path between them) — exposing the raw port to the public internet isn't necessary either way, since the only intended caller is zupa-api.
+
+**Day-to-day**: `pm2 logs whatsapp-agent`, `pm2 restart whatsapp-agent` after a `.env` change (PM2 doesn't reload env vars on its own), `curl localhost:<PORT>/health` to check it's alive. Consider `pm2 install pm2-logrotate` if this is the first long-running PM2 app on the box — logs accumulate indefinitely otherwise.
+
 ## Required zupa-api-side configuration
 
 Set these on zupa-api, in addition to this service's own `.env`:
@@ -38,4 +59,4 @@ The zone matching itself is a simple substring/token match (`searchZones` in `de
 
 ## Status
 
-Workstream A (zupa-api) and B (this service) are implemented. Workstream C (zupa-crm: mode badge, take-over button, extending `chat-reply-webhook` for AI-authored outbound messages) is next. Go live in shadow mode first, per the plan.
+Workstreams A (zupa-api), B (this service), and C (zupa-crm: mode badge, take-over button, AI-reply forwarding) are all implemented and pushed. Go live in shadow mode first, per the plan.
