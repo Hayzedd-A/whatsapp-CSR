@@ -1,0 +1,36 @@
+name: Deploy
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  # Cheap, no-SSH sanity check before anything touches the server — a
+  # syntax error should never reach `git pull` on the droplet.
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm ci
+      - name: Syntax check
+        run: find src -name '*.js' -print0 | xargs -0 -n1 node --check
+
+  deploy:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to Droplet
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script: |
+            cd ~/whatsapp-CSR
+            git pull origin main
+            npm install --omit=dev
+            pm2 startOrRestart ecosystem.config.js --update-env

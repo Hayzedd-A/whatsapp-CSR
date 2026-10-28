@@ -17,6 +17,11 @@ module.exports = {
       // drop whatever LLM turn was in flight.
       watch: false,
       max_memory_restart: "300M",
+      // Explicit paths (rather than PM2's default ~/.pm2/logs/<name>-*.log)
+      // so the in-app /logs viewer has a deterministic place to read from.
+      out_file: "./logs/out.log",
+      error_file: "./logs/error.log",
+      log_date_format: "YYYY-MM-DD HH:mm:ss",
       env: {
         NODE_ENV: "production",
       },

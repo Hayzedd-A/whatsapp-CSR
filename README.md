@@ -42,15 +42,30 @@ Two things that matter specifically for this service, not just PM2 boilerplate:
 - **`instances: 1` in `ecosystem.config.js` is load-bearing, not a default left alone.** This service uses SQLite for session/cart state, which allows exactly one writer process. Never run this under PM2 cluster mode (`-i max` or `instances: "max"`) — two instances writing the same `.db` file will corrupt state or crash. If you ever need more throughput than one process gives you, that's a real scaling conversation (migrate off SQLite), not a PM2 flag.
 - **Set `DB_PATH` in `.env` to an absolute path outside the repo checkout** if your deploy process ever replaces the directory (fresh clone/rsync) rather than `git pull` in place — e.g. `/var/lib/whatsapp-agent/agent.db`. If you deploy by `git pull`-ing into the same persistent directory every time (the common PM2 setup), the default relative `./data/agent.db` is fine since the directory itself never disappears. Either way: losing that file loses every in-flight cart and session, so make sure whatever path you pick survives a redeploy.
 
-If this runs on the **same server as zupa-api**, point `WHATSAPP_AGENT_BASE_URL` (on zupa-api's side) at `http://localhost:<PORT>` — no public exposure, reverse proxy, or TLS needed, since the only caller is zupa-api itself on the same box. If it's on a **different server**, it needs to be reachable from wherever zupa-api runs (internal network route, or a reverse-proxied HTTPS endpoint if that's the only path between them) — exposing the raw port to the public internet isn't necessary either way, since the only intended caller is zupa-api.
+**Day-to-day**: `pm2 logs whatsapp-agent`, `pm2 restart whatsapp-agent` after a `.env` change (PM2 doesn't reload env vars on its own), `curl localhost:<PORT>/health` to check it's alive. Consider `pm2 install pm2-logrotate` if this is the first long-running PM2 app on the box — logs accumulate indefinitely otherwise. For anything beyond a quick `pm2 logs` tail, see the `/logs` viewer below.
 
-**Day-to-day**: `pm2 logs whatsapp-agent`, `pm2 restart whatsapp-agent` after a `.env` change (PM2 doesn't reload env vars on its own), `curl localhost:<PORT>/health` to check it's alive. Consider `pm2 install pm2-logrotate` if this is the first long-running PM2 app on the box — logs accumulate indefinitely otherwise.
+## Auto-deploy (GitHub Actions)
+
+`.github/workflows/deploy.yml` runs on every push to `main`: a no-SSH `verify` job (syntax-checks every file on a throwaway runner) must pass before a second job SSHes into the droplet and runs `git pull && npm install --omit=dev && pm2 startOrRestart ecosystem.config.js`.
+
+Add these repo secrets (Settings → Secrets and variables → Actions) before the first push — they're scoped to this repo specifically, not shared with the Slack bot's repo even though it deploys to the same box:
+- `SERVER_HOST` — the droplet's address.
+- `SERVER_USER` — `root`, matching how it's deployed manually today.
+- `SERVER_SSH_KEY` — a private key whose public half is in that server's `~/.ssh/authorized_keys`.
+
+Deliberately `npm install`, not `npm ci`, on the server — `npm ci` wipes `node_modules` on every run, which would force `better-sqlite3` to recompile its native addon (the slow, failure-prone step from getting this running the first time) on every single deploy instead of just once.
 
 ## Required zupa-api-side configuration
 
 Set these on zupa-api, in addition to this service's own `.env`:
 - `WHATSAPP_AGENT_API_KEY` — same value as this service's.
 - `WHATSAPP_AGENT_BASE_URL` — this service's base URL, so zupa-api's inbound webhook handler can forward messages here.
+
+## Live log viewer
+
+Set `LOGS_ACCESS_KEY` in `.env` (a value separate from `WHATSAPP_AGENT_API_KEY` — see why in `.env.example`), then visit `https://<this-service>/logs` — it'll prompt for the key, or append `?key=...` directly. Two auto-refreshing panels, operation logs (stdout) and error logs (stderr), reading straight from the files `ecosystem.config.js` points PM2 at (`./logs/out.log`, `./logs/error.log`). Leave `LOGS_ACCESS_KEY` unset to disable the feature entirely — unconfigured, `/logs` 404s rather than just rejecting a missing key, so it doesn't advertise itself.
+
+This reads PM2's own log files, so it only shows anything once PM2 is actually running the app with `ecosystem.config.js` (not `node src/index.js` directly, and not `pm2 start src/index.js` without the ecosystem file — neither of those writes to the paths this expects).
 
 ## Session storage
 
