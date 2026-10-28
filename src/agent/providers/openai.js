@@ -76,4 +76,25 @@ function toolResultRow(results) {
   };
 }
 
-module.exports = { runTurn, toolResultRow, buildApiMessages };
+// One-shot structured-output classification, decoupled from the stored
+// tool-calling conversation history (used for e.g. the resume-offer
+// decision in agent/orchestrator.js) — same pattern as the Slack bot's
+// ai-client.js openaiStructuredCompletion.
+async function classify({ systemPrompt, userMessage, schemaName, schema }) {
+  const client = getClient();
+  const completion = await client.chat.completions.create({
+    model: config.openaiModel,
+    temperature: 0,
+    response_format: {
+      type: "json_schema",
+      json_schema: { name: schemaName, strict: true, schema: { ...schema, additionalProperties: false } },
+    },
+    messages: [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userMessage },
+    ],
+  });
+  return JSON.parse(completion.choices[0].message.content);
+}
+
+module.exports = { runTurn, toolResultRow, buildApiMessages, classify };

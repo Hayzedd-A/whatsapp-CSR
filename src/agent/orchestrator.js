@@ -10,6 +10,34 @@ const toolDefinitions = Object.values(tools).map((t) => t.definition);
 
 const MAX_TOOL_ROUNDS = 8; // guards against a runaway tool-call loop
 
+// zupa-crm's rep-send path tags outbound messages with the rep's actual
+// name (e.g. "Jane Doe" — see its whatsapp-send function), not a fixed
+// "staff:<id>" prefix, so "human" here means "anything that isn't one of
+// our own known senders."
+const KNOWN_NON_HUMAN_SENDERS = new Set(["ai-agent", "customer", "system"]);
+
+// Shared by the pre-send safety check (has a human replied since I started
+// composing this turn's reply?) and the resume-offer flow (has a human
+// been active recently, so a proactive offer shouldn't interrupt them?).
+async function hasHumanRepliedSince(phoneNumber, sinceMs, limit = 5) {
+  const recent = await zupaApi.getRecentConversationMessages(phoneNumber, limit);
+  return recent.some(
+    (m) =>
+      m.direction === "outbound" &&
+      m.sender &&
+      !KNOWN_NON_HUMAN_SENDERS.has(m.sender) &&
+      new Date(m.createdAt).getTime() > sinceMs,
+  );
+}
+
+const RESUME_OFFER_TEXT =
+  "Looks like your query's been fully handled — would you like me to help you with anything else, like placing an order?";
+// Don't offer if a human has been active this recently — a proactive
+// message mid-conversation with a CSR is exactly the collision this is
+// meant to avoid, not just a composition-window race like the check above.
+const OFFER_SAFETY_WINDOW_MS = 5 * 60 * 1000;
+const HANDOFF_CONTEXT_MESSAGES = 8; // transcript depth given to the offer-decision classifier
+
 async function runTurn(phoneNumber, userText) {
   sessions.appendMessage(phoneNumber, "user", userText);
 
@@ -109,20 +137,7 @@ async function handleInboundMessage(phoneNumber, { text, mediaUrl, mediaType, wa
   // replied to this customer while the agent was composing its answer,
   // don't send — hand off instead of risking a double reply.
   try {
-    const recent = await zupaApi.getRecentConversationMessages(phoneNumber, 5);
-    // zupa-crm's rep-send path tags outbound messages with the rep's actual
-    // name (e.g. "Jane Doe" — see its whatsapp-send function), not a fixed
-    // "staff:<id>" prefix, so "human" here means "anything that isn't one of
-    // our own known senders."
-    const KNOWN_NON_HUMAN_SENDERS = new Set(["ai-agent", "customer", "system"]);
-    const humanRepliedMidTurn = recent.some(
-      (m) =>
-        m.direction === "outbound" &&
-        m.sender &&
-        !KNOWN_NON_HUMAN_SENDERS.has(m.sender) &&
-        new Date(m.createdAt).getTime() > turnStartedAt,
-    );
-    if (humanRepliedMidTurn) {
+    if (await hasHumanRepliedSince(phoneNumber, turnStartedAt)) {
       sessions.updateSession(phoneNumber, {
         mode: "human_handoff",
         escalatedAt: Date.now(),
@@ -160,4 +175,105 @@ async function handleInboundMessage(phoneNumber, { text, mediaUrl, mediaType, wa
   }
 }
 
-module.exports = { handleInboundMessage };
+// Called from the webhook route for a customer message that arrives while
+// the conversation is in human_handoff (and not stale enough for the
+// webhook's own timestamp-based auto-resume to have already taken it).
+// Two jobs, mutually exclusive per message:
+//  1. If we're waiting on an answer to an offer we just made
+//     (session.resumeOfferedAt set), interpret this message as that answer.
+//  2. Otherwise, if we haven't already asked once this handoff episode
+//     (session.resumeOfferDeclined), decide via a narrow yes/no
+//     classification — not a vague confidence score — whether this message
+//     looks like a fresh, self-contained request unrelated to whatever the
+//     human was handling, and if so, offer to resume (never silently).
+async function handleHandoffMessage(phoneNumber, { text, waMessageId }) {
+  const session = sessions.getSession(phoneNumber);
+  if (!session || session.mode !== "human_handoff") return; // overtaken by something else already
+
+  if (!text) return; // media-only messages aren't worth a classification call here
+
+  if (session.resumeOfferedAt) {
+    let answer = "unclear";
+    try {
+      const result = await provider.classify({
+        systemPrompt: `A WhatsApp AI ordering assistant for Gourmet Twist asked a customer: "${RESUME_OFFER_TEXT}". Classify the customer's reply to that question.`,
+        userMessage: text,
+        schemaName: "resume_offer_reply",
+        schema: {
+          type: "object",
+          properties: { answer: { type: "string", enum: ["yes", "no", "unclear"] } },
+          required: ["answer"],
+        },
+      });
+      answer = result.answer;
+    } catch (error) {
+      console.error(`[agent] resume-offer reply classification failed for ${phoneNumber}:`, error.message);
+    }
+    console.log(`[agent] ${phoneNumber} resume-offer reply classified as "${answer}"`);
+
+    if (answer === "yes") {
+      sessions.updateSession(phoneNumber, { mode: "ai_ordering" }); // also clears resumeOfferedAt/Declined
+      await handleInboundMessage(phoneNumber, { text, waMessageId });
+    } else {
+      // "no" or "unclear" — stop asking for the rest of this handoff
+      // episode (a fresh escalation later gets its own fresh offer cycle).
+      sessions.updateSession(phoneNumber, { resumeOfferedAt: null, resumeOfferDeclined: true });
+    }
+    return;
+  }
+
+  if (session.resumeOfferDeclined) return; // already asked once this episode
+
+  let shouldOffer = false;
+  try {
+    const recent = await zupaApi.getRecentConversationMessages(phoneNumber, HANDOFF_CONTEXT_MESSAGES);
+    const transcript = recent
+      .map((m) => `${m.direction === "inbound" ? "Customer" : m.sender || "Staff"}: ${m.body || "[media]"}`)
+      .join("\n");
+    const result = await provider.classify({
+      systemPrompt:
+        "You help an AI ordering assistant decide whether to offer to resume helping a WhatsApp customer whose conversation is currently with a human teammate. Given the recent conversation and the customer's newest message, decide if the newest message looks like a fresh, self-contained request the AI could handle alone (placing a new order, a menu question, a general question) rather than a continuation of whatever needed a human (a complaint, refund, modifying/cancelling an order, anything still unresolved). Be conservative: if there's any sign the human conversation is still ongoing or unresolved, or it's ambiguous, say no.",
+      userMessage: `Recent conversation:\n${transcript}\n\nCustomer's newest message: "${text}"`,
+      schemaName: "resume_offer_decision",
+      schema: {
+        type: "object",
+        properties: { offer: { type: "boolean" }, reason: { type: "string" } },
+        required: ["offer", "reason"],
+      },
+    });
+    shouldOffer = result.offer;
+    console.log(`[agent] ${phoneNumber} resume-offer decision: ${shouldOffer} (${result.reason})`);
+  } catch (error) {
+    console.error(`[agent] resume-offer decision classification failed for ${phoneNumber}:`, error.message);
+    return; // fail closed — no classification, no unsolicited message
+  }
+
+  if (!shouldOffer) return;
+
+  try {
+    if (await hasHumanRepliedSince(phoneNumber, Date.now() - OFFER_SAFETY_WINDOW_MS)) {
+      console.log(`[agent] ${phoneNumber} skipping resume offer — a human has been active recently`);
+      return;
+    }
+  } catch (error) {
+    // Unlike the normal-reply safety check, this fails CLOSED: there's no
+    // reply already owed to the customer here, just a proactive message we
+    // chose to send — if we can't confirm it's safe, don't send it.
+    console.error(`[agent] resume-offer safety check failed for ${phoneNumber}, skipping offer:`, error.message);
+    return;
+  }
+
+  try {
+    await zupaApi.sendMessage({
+      to: phoneNumber,
+      message: RESUME_OFFER_TEXT,
+      messageId: `agent-offer-${phoneNumber}-${Date.now()}`,
+    });
+    sessions.updateSession(phoneNumber, { resumeOfferedAt: Date.now() });
+    console.log(`[agent] ${phoneNumber} sent resume offer`);
+  } catch (error) {
+    console.error(`[agent] failed to send resume offer to ${phoneNumber}:`, error.message);
+  }
+}
+
+module.exports = { handleInboundMessage, handleHandoffMessage };

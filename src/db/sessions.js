@@ -24,6 +24,7 @@ function parseSession(row) {
     deliveryAddress: row.deliveryAddress ? JSON.parse(row.deliveryAddress) : null,
     recipient: row.recipient ? JSON.parse(row.recipient) : null,
     pendingOrder: row.pendingOrder ? JSON.parse(row.pendingOrder) : null,
+    resumeOfferDeclined: !!row.resumeOfferDeclined,
   };
 }
 
@@ -49,16 +50,31 @@ function getOrCreateSession(phoneNumber) {
 
 // `patch` may include: mode, cart (array), deliveryAddress (object|null),
 // recipient (object|null), pendingOrder (object|null), orderId, orderNumber,
-// clientReference, paymentStatus, escalatedAt (ms epoch|null), escalationReason.
+// clientReference, paymentStatus, escalatedAt (ms epoch|null), escalationReason,
+// resumeOfferedAt (ms epoch|null), resumeOfferDeclined (boolean).
 function updateSession(phoneNumber, patch) {
   const current = getOrCreateSession(phoneNumber);
   const next = { ...current, ...patch };
+
+  // Any explicit mode change (a fresh escalation, or a resume for any
+  // reason — customer confirmed, stale-handoff auto-resume, a rep manually
+  // resuming) clears the resume-offer state, so a new handoff episode
+  // always starts with a fresh offer cycle rather than inheriting a stale
+  // "already declined" from a previous one. The one path that intentionally
+  // sets these fields WITHOUT changing mode (handleHandoffMessage, making or
+  // recording the outcome of an offer) is unaffected, since it never
+  // includes `mode` in its patch.
+  if ("mode" in patch && !("resumeOfferedAt" in patch) && !("resumeOfferDeclined" in patch)) {
+    next.resumeOfferedAt = null;
+    next.resumeOfferDeclined = false;
+  }
 
   db.prepare(
     `UPDATE sessions SET
        mode = ?, cart = ?, deliveryAddress = ?, recipient = ?, pendingOrder = ?,
        orderId = ?, orderNumber = ?, clientReference = ?, paymentStatus = ?,
-       escalatedAt = ?, escalationReason = ?, lastMessageAt = ?, updatedAt = ?
+       escalatedAt = ?, escalationReason = ?, resumeOfferedAt = ?, resumeOfferDeclined = ?,
+       lastMessageAt = ?, updatedAt = ?
      WHERE phoneNumber = ?`,
   ).run(
     next.mode,
@@ -72,6 +88,8 @@ function updateSession(phoneNumber, patch) {
     next.paymentStatus,
     next.escalatedAt || null,
     next.escalationReason || null,
+    next.resumeOfferedAt || null,
+    next.resumeOfferDeclined ? 1 : 0,
     Date.now(),
     Date.now(),
     phoneNumber,

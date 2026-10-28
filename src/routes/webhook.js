@@ -4,7 +4,7 @@ const express = require("express");
 const config = require("../config");
 const sessions = require("../db/sessions");
 const zupaApi = require("../zupaApiClient");
-const { handleInboundMessage } = require("../agent/orchestrator");
+const { handleInboundMessage, handleHandoffMessage } = require("../agent/orchestrator");
 
 const router = express.Router();
 
@@ -50,7 +50,10 @@ router.post("/inbound", (req, res) => {
   );
 
   if (session.mode === "human_handoff") {
-    console.log(`[webhook] ${from} is in human_handoff — not responding`);
+    console.log(`[webhook] ${from} is in human_handoff — checking resume-offer flow`);
+    handleHandoffMessage(from, { text, waMessageId }).catch((error) => {
+      console.error(`[webhook] handoff-resume check failed for ${from}:`, error.message);
+    });
     return;
   }
 

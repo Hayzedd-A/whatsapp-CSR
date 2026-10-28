@@ -73,4 +73,19 @@ try {
   if (!/duplicate column/i.test(e.message)) throw e;
 }
 
+// Additive migrations for the confidence-gated resume-offer flow (see
+// agent/orchestrator.js handleHandoffMessage): resumeOfferedAt marks "we
+// just asked, the next message is the customer's answer"; resumeOfferDeclined
+// marks "already asked once this handoff episode, don't ask again."
+try {
+  db.exec(`ALTER TABLE sessions ADD COLUMN resumeOfferedAt INTEGER;`);
+} catch (e) {
+  if (!/duplicate column/i.test(e.message)) throw e;
+}
+try {
+  db.exec(`ALTER TABLE sessions ADD COLUMN resumeOfferDeclined INTEGER NOT NULL DEFAULT 0;`);
+} catch (e) {
+  if (!/duplicate column/i.test(e.message)) throw e;
+}
+
 module.exports = db;
