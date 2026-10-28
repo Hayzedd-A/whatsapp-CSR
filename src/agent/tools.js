@@ -337,7 +337,7 @@ const tools = {
       const phoneNumber = input.phoneNumber || ctx.phoneNumber;
       const result = await zupaApi.fetchOrderStatus(phoneNumber);
       if (!result.found) {
-        return { found: false, note: "No customer record found for this phone number — double-check it with the customer, or escalate if they're sure it's right." };
+        return { found: false, note: "No customer record found for this phone number — double-check it with the customer. If it's confirmed right and still not found, ask if they'd like you to hand over to a human, and only escalate if they agree." };
       }
       if (!result.orders.length) {
         return { found: true, orders: [], note: "This customer exists but has no orders yet." };
@@ -349,7 +349,7 @@ const tools = {
   escalate_to_human: {
     definition: {
       name: "escalate_to_human",
-      description: "Hand this conversation to a human teammate and stop responding yourself. Use for any complaint/refund, modifying or cancelling an already-placed order, a bulk/corporate request, an explicit ask to talk to a person, or anything you're not confident about.",
+      description: "Hand this conversation to a human teammate and stop responding yourself. Only call this after the customer has confirmed they want to be handed over — ask first ('this will need a human teammate, is that okay?') and wait for their reply. Skip asking only if the customer already explicitly asked to talk to a person themselves (that is their confirmation), or if you're genuinely stuck and can't continue at all (e.g. a tool keeps failing) — escalate immediately in either of those cases. Typical reasons: a complaint/refund, modifying or cancelling an already-placed order, a bulk/corporate request, or anything you're not confident about.",
       input_schema: {
         type: "object",
         properties: {
