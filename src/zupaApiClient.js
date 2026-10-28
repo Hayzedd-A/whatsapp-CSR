@@ -104,6 +104,19 @@ async function postSystemNote(phoneNumber, body, { orderNumber, mode } = {}) {
   });
 }
 
+// GET /customer-requests/stores/:storeId/whatsapp-agent/orders — a
+// customer's recent orders, current status, and dispatch/rider info, looked
+// up by phone number (not orderNumber) — sibling of the whatsapp-agent
+// products/order/new routes, backed by fetchCustomerOrderStatus()
+// (customer-request/util.js) on that side.
+async function fetchOrderStatus(phoneNumber, { limit } = {}) {
+  const { data } = await client.get(
+    `/customer-requests/stores/${config.zupaStoreId}/whatsapp-agent/orders`,
+    { params: { phoneNumber, limit } },
+  );
+  return data.data; // { found: boolean, orders: [...] }
+}
+
 // GET /customer-requests/stores/:storeId/branches — already unauthenticated/
 // public on the zupa-api side (no change needed there), used to resolve a
 // pickup branch by name.
@@ -132,4 +145,5 @@ module.exports = {
   postSystemNote,
   fetchBranches,
   fetchDeliveryTypes,
+  fetchOrderStatus,
 };

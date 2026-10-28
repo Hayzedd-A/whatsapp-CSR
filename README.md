@@ -89,6 +89,10 @@ Both pickup and home-delivery are now wired end-to-end:
 
 The zone matching itself is a simple substring/token match (`searchZones` in `deliveryZones.js`), not the Slack bot's full fuzzy/alias matcher backing its live-typeahead UI — that's a reasonable v1 given the LLM confirms the matched zone name with the customer before proceeding either way. Worth revisiting if the CSR chat-export review shows customers describing areas in ways this simple match handles poorly.
 
+## Order status lookups
+
+`get_order_status` answers "where's my order"/"status of my last order" directly instead of escalating every time — `GET /customer-requests/stores/:storeId/whatsapp-agent/orders?phoneNumber=...` (zupa-api, `whatsappAuth`-gated, `fetchCustomerOrderStatus` in `customer-request/util.js`) returns the customer's recent orders with status, delivery type, items, and — once dispatched — rider name/phone and ETA. It's keyed by phone number, not orderNumber, so the customer never needs to already know an order number, and the tool defaults to the number the conversation is on rather than trusting a model-supplied one. Deliberately a new route rather than reusing kitchen-api's existing `order-status-whatsapp` — that one is unauthenticated and builds its query via raw, string-interpolated SQL.
+
 ## Status
 
 Workstreams A (zupa-api), B (this service), and C (zupa-crm: mode badge, take-over button, AI-reply forwarding) are all implemented and pushed. Go live in shadow mode first, per the plan.

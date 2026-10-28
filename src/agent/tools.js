@@ -319,6 +319,33 @@ const tools = {
     },
   },
 
+  get_order_status: {
+    definition: {
+      name: "get_order_status",
+      description: "Look up this customer's recent orders and their current status (pending, processing, ready for dispatch, dispatched, delivered, cancelled), including rider name/phone and ETA once dispatched. Use this whenever a customer asks about an existing order — 'where's my order', 'status of my last order', 'has it been dispatched' — instead of escalating to a human.",
+      input_schema: {
+        type: "object",
+        properties: {
+          phoneNumber: {
+            type: "string",
+            description: "Only set this if the customer explicitly says the order was placed under a different number than the one they're messaging from.",
+          },
+        },
+      },
+    },
+    run: async (input, ctx) => {
+      const phoneNumber = input.phoneNumber || ctx.phoneNumber;
+      const result = await zupaApi.fetchOrderStatus(phoneNumber);
+      if (!result.found) {
+        return { found: false, note: "No customer record found for this phone number — double-check it with the customer, or escalate if they're sure it's right." };
+      }
+      if (!result.orders.length) {
+        return { found: true, orders: [], note: "This customer exists but has no orders yet." };
+      }
+      return result;
+    },
+  },
+
   escalate_to_human: {
     definition: {
       name: "escalate_to_human",
