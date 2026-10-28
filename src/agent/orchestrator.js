@@ -30,6 +30,21 @@ async function hasHumanRepliedSince(phoneNumber, sinceMs, limit = 5) {
   );
 }
 
+// zupa-api forwards this on to zupa-crm (its own, separate database) when
+// `mode` is set — without it, a CSR gets no notice at all that the AI handed
+// off or auto-resumed, and the "AI handling" badge there only ever moves via
+// a rep's own manual take-over click. Not called for the mid-turn-human-reply
+// handoff below: zupa-crm already knows in that case, since the rep's own
+// send already flipped handled_by (zupa-crm's whatsapp-send function).
+async function notifyHandoffChange(phoneNumber, mode, reason) {
+  try {
+    const orderNumber = sessions.getSession(phoneNumber)?.orderNumber;
+    await zupaApi.postSystemNote(phoneNumber, reason, { orderNumber, mode });
+  } catch (e) {
+    console.error(`[agent] failed to post ${mode} system note for ${phoneNumber}:`, e.message);
+  }
+}
+
 const RESUME_OFFER_TEXT =
   "Looks like your query's been fully handled — would you like me to help you with anything else, like placing an order?";
 // Don't offer if a human has been active this recently — a proactive
@@ -120,11 +135,7 @@ async function handleInboundMessage(phoneNumber, { text, mediaUrl, mediaType, wa
       escalatedAt: Date.now(),
       escalationReason: `Agent error: ${error.message}`,
     });
-    try {
-      await zupaApi.postSystemNote(phoneNumber, `AI error, handed off — ${error.message}`);
-    } catch (e) {
-      console.error("[agent] failed to post error system note:", e.message);
-    }
+    await notifyHandoffChange(phoneNumber, "human_handoff", `AI error, handed off — ${error.message}`);
     return;
   }
 
@@ -172,6 +183,7 @@ async function handleInboundMessage(phoneNumber, { text, mediaUrl, mediaType, wa
       escalatedAt: Date.now(),
       escalationReason: `Failed to deliver AI reply: ${error.message}`,
     });
+    await notifyHandoffChange(phoneNumber, "human_handoff", `AI reply failed to send, handed off — ${error.message}`);
   }
 }
 
@@ -213,6 +225,7 @@ async function handleHandoffMessage(phoneNumber, { text, waMessageId }) {
 
     if (answer === "yes") {
       sessions.updateSession(phoneNumber, { mode: "ai_ordering" }); // also clears resumeOfferedAt/Declined
+      await notifyHandoffChange(phoneNumber, "ai_ordering", "Customer confirmed — AI resumed");
       await handleInboundMessage(phoneNumber, { text, waMessageId });
     } else {
       // "no" or "unclear" — stop asking for the rest of this handoff
