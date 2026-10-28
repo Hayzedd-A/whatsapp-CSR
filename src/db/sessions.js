@@ -1,8 +1,20 @@
 "use strict";
 
 const db = require("./index");
+const config = require("../config");
 
 const MAX_LOCAL_MESSAGES = 40; // bounds prompt size/cost; recent context is what matters for ordering
+
+// Each stored message row is tagged with the provider that wrote it, so
+// switching AI_PROVIDER never replays one provider's wire format (e.g.
+// Anthropic's content-block arrays) through the other adapter — which
+// throws, since e.g. OpenAI expects each message to be a plain object, not
+// an array. A switch just means that conversation's local context starts
+// fresh under the new provider instead of crashing on its next turn.
+function activeProvider() {
+  const p = config.aiProvider;
+  return p === "claude" || p === "anthropic" ? "anthropic" : "openai";
+}
 
 function parseSession(row) {
   if (!row) return null;
@@ -79,25 +91,27 @@ function touchLastMessageAt(phoneNumber) {
 // Claude later — for a plain customer/agent text turn, a string; for an
 // assistant turn with tool calls, the raw Anthropic content block array.
 function appendMessage(phoneNumber, role, content) {
+  const provider = activeProvider();
   db.prepare(
-    "INSERT INTO messages (phoneNumber, role, content, createdAt) VALUES (?, ?, ?, ?)",
-  ).run(phoneNumber, role, JSON.stringify(content), Date.now());
+    "INSERT INTO messages (phoneNumber, role, content, provider, createdAt) VALUES (?, ?, ?, ?, ?)",
+  ).run(phoneNumber, role, JSON.stringify(content), provider, Date.now());
 
   // Prune oldest rows beyond the cap so prompt size/cost doesn't grow
-  // unbounded over a long-lived conversation.
+  // unbounded over a long-lived conversation. Scoped to this provider so a
+  // burst of messages under one provider can't evict the other's history.
   db.prepare(
-    `DELETE FROM messages WHERE phoneNumber = ? AND id NOT IN (
-       SELECT id FROM messages WHERE phoneNumber = ? ORDER BY id DESC LIMIT ?
+    `DELETE FROM messages WHERE phoneNumber = ? AND provider = ? AND id NOT IN (
+       SELECT id FROM messages WHERE phoneNumber = ? AND provider = ? ORDER BY id DESC LIMIT ?
      )`,
-  ).run(phoneNumber, phoneNumber, MAX_LOCAL_MESSAGES);
+  ).run(phoneNumber, provider, phoneNumber, provider, MAX_LOCAL_MESSAGES);
 }
 
 function getRecentMessages(phoneNumber) {
   const rows = db
     .prepare(
-      "SELECT role, content FROM messages WHERE phoneNumber = ? ORDER BY id ASC",
+      "SELECT role, content FROM messages WHERE phoneNumber = ? AND provider = ? ORDER BY id ASC",
     )
-    .all(phoneNumber);
+    .all(phoneNumber, activeProvider());
   return rows.map((r) => ({ role: r.role, content: JSON.parse(r.content) }));
 }
 

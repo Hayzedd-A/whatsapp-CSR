@@ -46,6 +46,7 @@ db.exec(`
     phoneNumber TEXT NOT NULL,
     role TEXT NOT NULL,
     content TEXT NOT NULL,
+    provider TEXT,
     createdAt INTEGER NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_messages_phone_created
@@ -57,6 +58,17 @@ db.exec(`
 // this covers already-deployed DB files.
 try {
   db.exec(`ALTER TABLE sessions ADD COLUMN pendingOrder TEXT;`);
+} catch (e) {
+  if (!/duplicate column/i.test(e.message)) throw e;
+}
+
+// Additive migration for messages rows written before provider-tagging
+// existed (see db/sessions.js) — left NULL on purpose, not backfilled: a row
+// with no provider tag simply won't match either provider's history query,
+// so old mixed-format rows are safely ignored instead of being replayed
+// through the wrong provider's adapter.
+try {
+  db.exec(`ALTER TABLE messages ADD COLUMN provider TEXT;`);
 } catch (e) {
   if (!/duplicate column/i.test(e.message)) throw e;
 }
