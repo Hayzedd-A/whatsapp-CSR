@@ -29,6 +29,12 @@ module.exports = {
   anthropicApiKey: process.env.ANTHROPIC_API_KEY || null,
   anthropicModel: process.env.ANTHROPIC_MODEL || "claude-sonnet-5-5",
 
+  // A human_handoff session this old auto-resumes to ai_ordering on the
+  // customer's next message — realistically no CSR is still watching the
+  // same chat this many hours later, so staying stuck forever is worse than
+  // just picking the AI back up.
+  staleHandoffHours: parseFloat(process.env.STALE_HANDOFF_HOURS) || 12,
+
   dbPath: process.env.DB_PATH || "./data/agent.db",
 
   // Optional — the /logs viewer refuses all access (404, not just 401, so

@@ -1,10 +1,14 @@
 "use strict";
 
 const express = require("express");
+const config = require("../config");
 const sessions = require("../db/sessions");
+const zupaApi = require("../zupaApiClient");
 const { handleInboundMessage } = require("../agent/orchestrator");
 
 const router = express.Router();
+
+const STALE_HANDOFF_MS = config.staleHandoffHours * 60 * 60 * 1000;
 
 // Called from zupa-api's inbound WhatsApp webhook handler (one non-blocking
 // call added at the point it already calls sendWhatsappFeedbackToTeam).
@@ -16,7 +20,29 @@ router.post("/inbound", (req, res) => {
     return res.status(400).json({ message: "from is required" });
   }
 
-  const session = sessions.getOrCreateSession(from);
+  let session = sessions.getOrCreateSession(from);
+
+  if (session.mode === "human_handoff") {
+    // escalatedAt should always be set alongside human_handoff (every code
+    // path that sets the mode sets this too) — missing it is treated as
+    // "stale" rather than "never expires", since getting unstuck is the
+    // safer failure mode here than a conversation stuck forever.
+    const handoffAgeMs = session.escalatedAt ? Date.now() - session.escalatedAt : Infinity;
+    if (handoffAgeMs > STALE_HANDOFF_MS) {
+      console.log(
+        `[webhook] ${from} handoff stale (${(handoffAgeMs / 3600000).toFixed(1)}h > ${config.staleHandoffHours}h) — auto-resuming to ai_ordering`,
+      );
+      session = sessions.updateSession(from, {
+        mode: "ai_ordering",
+        escalatedAt: null,
+        escalationReason: null,
+      });
+      zupaApi
+        .postSystemNote(from, `AI auto-resumed — no CSR activity for over ${config.staleHandoffHours}h`, { mode: "ai_ordering" })
+        .catch((e) => console.error(`[webhook] failed to post auto-resume system note for ${from}:`, e.message));
+    }
+  }
+
   res.status(200).json({ handled: session.mode !== "human_handoff", mode: session.mode });
 
   console.log(

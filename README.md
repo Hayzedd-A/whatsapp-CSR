@@ -93,6 +93,11 @@ The zone matching itself is a simple substring/token match (`searchZones` in `de
 
 `get_order_status` answers "where's my order"/"status of my last order" directly instead of escalating every time — `GET /customer-requests/stores/:storeId/whatsapp-agent/orders?phoneNumber=...` (zupa-api, `whatsappAuth`-gated, `fetchCustomerOrderStatus` in `customer-request/util.js`) returns the customer's recent orders with status, delivery type, items, and — once dispatched — rider name/phone and ETA. It's keyed by phone number, not orderNumber, so the customer never needs to already know an order number, and the tool defaults to the number the conversation is on rather than trusting a model-supplied one. Deliberately a new route rather than reusing kitchen-api's existing `order-status-whatsapp` — that one is unauthenticated and builds its query via raw, string-interpolated SQL.
 
+## Handoff behavior
+
+- **Escalating to a human requires the customer's go-ahead first** — the agent asks ("this will need a human teammate, is that okay?") and only calls `escalate_to_human` once they agree, unless they already explicitly asked for a person themselves. The exception is a hard failure (an LLM turn erroring, a WhatsApp send failing, a human replying mid-turn) — those escalate immediately, with no confirmation needed, since there's nothing left for the agent to do.
+- **A stale handoff auto-resumes.** `STALE_HANDOFF_HOURS` (default 12) — once a `human_handoff` session is older than this, the customer's next message flips it straight back to `ai_ordering` before the agent responds, on the reasoning that no CSR is realistically still watching the same chat that many hours later. This is a plain timestamp check (`escalatedAt` vs. now), not an LLM judgment call. A system note is posted to the transcript so a CSR reviewing it later can see why the AI picked it back up.
+
 ## Status
 
 Workstreams A (zupa-api), B (this service), and C (zupa-crm: mode badge, take-over button, AI-reply forwarding) are all implemented and pushed. Go live in shadow mode first, per the plan.
