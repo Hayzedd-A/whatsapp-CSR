@@ -56,6 +56,7 @@ async function runTurn(phoneNumber, userText) {
         output = tool
           ? await tool.run(block.input, { phoneNumber, session: freshSession })
           : { error: `Unknown tool: ${block.name}` };
+        console.log(`[agent] ${phoneNumber} tool ${block.name}(${JSON.stringify(block.input)}) -> ${JSON.stringify(output).slice(0, 300)}`);
       } catch (error) {
         console.error(`[agent] tool ${block.name} failed:`, error.message);
         output = { error: error.message || "Tool call failed" };
@@ -87,6 +88,7 @@ async function handleInboundMessage(phoneNumber, { text, mediaUrl, mediaType, wa
 
   const turnStartedAt = Date.now();
   const userText = text || (mediaUrl ? `[sent a ${mediaType || "file"}]` : "[empty message]");
+  console.log(`[agent] ${phoneNumber} turn started: "${userText.slice(0, 200)}"`);
 
   let replyText;
   try {
@@ -106,7 +108,10 @@ async function handleInboundMessage(phoneNumber, { text, mediaUrl, mediaType, wa
     return;
   }
 
-  if (!replyText) return; // e.g. the only thing that happened was escalation
+  if (!replyText) {
+    console.log(`[agent] ${phoneNumber} turn produced no reply text (mode=${sessions.getSession(phoneNumber).mode})`);
+    return; // e.g. the only thing that happened was escalation
+  }
 
   // Defense in depth on top of the explicit take-over call: if a human
   // replied to this customer while the agent was composing its answer,
@@ -148,6 +153,7 @@ async function handleInboundMessage(phoneNumber, { text, mediaUrl, mediaType, wa
       replyMessageId: waMessageId,
       messageId: `agent-${phoneNumber}-${Date.now()}`,
     });
+    console.log(`[agent] ${phoneNumber} replied: "${replyText.slice(0, 200)}"`);
   } catch (error) {
     // zupa-api now dispatches to WhatsApp synchronously (no queue to retry
     // later on our behalf), so a failure here is real and needs a real

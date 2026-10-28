@@ -314,6 +314,7 @@ const tools = {
         paymentStatus: "paid",
       });
 
+      console.log(`[check_payment] order ${orderResult.orderNumber} created for ${ctx.phoneNumber} (ref=${clientReference})`);
       return { ...result, orderCreated: true, orderNumber: orderResult.orderNumber };
     },
   },
@@ -337,6 +338,7 @@ const tools = {
         escalationReason: input.reason,
       });
 
+      console.log(`[escalate_to_human] ${ctx.phoneNumber}: ${input.reason}`);
       try {
         await zupaApi.postSystemNote(
           ctx.phoneNumber,

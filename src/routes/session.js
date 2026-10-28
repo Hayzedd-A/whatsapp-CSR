@@ -20,6 +20,7 @@ router.post("/pause", (req, res) => {
     escalationReason: reason || "rep_takeover",
   });
 
+  console.log(`[session] ${phoneNumber} paused (${reason || "rep_takeover"})`);
   return res.status(200).json({ success: true });
 });
 
@@ -36,6 +37,7 @@ router.post("/resume", (req, res) => {
     escalationReason: null,
   });
 
+  console.log(`[session] ${phoneNumber} resumed to ai_ordering`);
   return res.status(200).json({ success: true });
 });
 

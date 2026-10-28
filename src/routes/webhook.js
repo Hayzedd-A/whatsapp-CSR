@@ -19,7 +19,14 @@ router.post("/inbound", (req, res) => {
   const session = sessions.getOrCreateSession(from);
   res.status(200).json({ handled: session.mode !== "human_handoff", mode: session.mode });
 
-  if (session.mode === "human_handoff") return;
+  console.log(
+    `[webhook] inbound from ${from} (mode=${session.mode}, type=${mediaType || (text ? "text" : "unknown")})`,
+  );
+
+  if (session.mode === "human_handoff") {
+    console.log(`[webhook] ${from} is in human_handoff — not responding`);
+    return;
+  }
 
   handleInboundMessage(from, { text, mediaUrl, mediaType, waMessageId }).catch((error) => {
     console.error(`[webhook] unhandled error for ${from}:`, error);
