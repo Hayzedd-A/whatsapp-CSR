@@ -64,7 +64,13 @@ async function verifyPayment({ customerName, recipientName, totalPrice, delivery
 async function sendMessage({ to, orderNumber, message, media, replyMessageId, messageId }) {
   const { data } = await client.post("/kitchen-api/send-free-form-message", {
     to,
-    orderNumber: orderNumber || null,
+    // "" not null — zupa-api resolves `to` from the order's customer when an
+    // orderNumber is given, so a null/falsy value must never reach it as a
+    // literal null (Sequelize matches that against any order with a null
+    // orderNumber and can silently redirect `to` to an unrelated customer).
+    // zupa-api is now fixed to guard against this regardless, but this
+    // stays explicit here too.
+    orderNumber: orderNumber || "",
     isTemplate: false,
     message,
     media: media || null,
