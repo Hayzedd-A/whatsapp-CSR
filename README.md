@@ -6,7 +6,13 @@ See `/home/hayzedd/.claude/plans/cuddly-wishing-fountain.md` for the full design
 
 ## What this service does
 
-Receives inbound WhatsApp messages forwarded from zupa-api, runs an LLM (Claude) tool-calling loop to build a cart, confirm it, collect delivery/pickup details, verify a bank-transfer payment, and only then create the order — handing off to a human (via zupa-crm) for anything it shouldn't handle itself: complaints, refunds, modifying an existing order, bulk/corporate requests, or whenever it isn't confident.
+Receives inbound WhatsApp messages forwarded from zupa-api, runs an LLM tool-calling loop to build a cart, confirm it, collect delivery/pickup details, verify a bank-transfer payment, and only then create the order — handing off to a human (via zupa-crm) for anything it shouldn't handle itself: complaints, refunds, modifying an existing order, bulk/corporate requests, or whenever it isn't confident.
+
+## LLM provider
+
+`AI_PROVIDER` picks the model: `openai` (default — the primary provider across the rest of the stack) or `claude`/`anthropic` (backup). Same switch, same convention, as the Slack bot's `src/parser/ai-client.js`. Only the active provider's API key needs to be set (`OPENAI_API_KEY`/`OPENAI_MODEL`, or `ANTHROPIC_API_KEY`/`ANTHROPIC_MODEL`) — see `.env.example`.
+
+The two providers are implemented as adapters under `src/agent/providers/` (`openai.js`, `anthropic.js`, selected by `providers/index.js`), both exposing the same `{ runTurn, toolResultRow, buildApiMessages }` shape so `agent/orchestrator.js` doesn't know or care which one is active. Tool definitions (`src/agent/tools.js`) are written once in Anthropic's `{ name, description, input_schema }` shape; the OpenAI adapter converts them to its own function-tool format. Conversation history is persisted per-provider in its own native wire format (an OpenAI-mode row isn't replayable by the Anthropic adapter and vice versa) — switching `AI_PROVIDER` only takes effect for new conversations; a conversation already in flight when you switch will hit a shape mismatch on its next turn, which the existing turn-level error handling catches and escalates to a human rather than crashing.
 
 ## Order creation is payment-gated — on purpose, enforced in code
 
@@ -16,7 +22,7 @@ There is exactly one place in this entire service that calls zupa-api's order-cr
 
 ```bash
 npm install
-cp .env.example .env   # fill in WHATSAPP_AGENT_API_KEY, ANTHROPIC_API_KEY, PAYMENT_* details
+cp .env.example .env   # fill in WHATSAPP_AGENT_API_KEY, OPENAI_API_KEY (or AI_PROVIDER=claude + ANTHROPIC_API_KEY), PAYMENT_* details
 npm run dev
 ```
 

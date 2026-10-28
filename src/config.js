@@ -16,7 +16,17 @@ module.exports = {
   whatsappAgentApiKey: required("WHATSAPP_AGENT_API_KEY"),
   zupaApiBaseUrl: required("ZUPA_API_BASE_URL"),
   zupaStoreId: required("ZUPA_STORE_ID"),
-  anthropicApiKey: required("ANTHROPIC_API_KEY"),
+
+  // OpenAI is the primary provider system-wide (same as everywhere else in
+  // the stack); Anthropic/Claude is kept as a switchable backup, exactly
+  // like the Slack bot's own AI_PROVIDER switch (src/parser/ai-client.js
+  // there). Keys are only required lazily, by whichever provider module
+  // actually gets loaded — not at startup — so an idle backup key doesn't
+  // need to be set.
+  aiProvider: (process.env.AI_PROVIDER || "openai").toLowerCase(),
+  openaiApiKey: process.env.OPENAI_API_KEY || null,
+  openaiModel: process.env.OPENAI_MODEL || "gpt-4o",
+  anthropicApiKey: process.env.ANTHROPIC_API_KEY || null,
   anthropicModel: process.env.ANTHROPIC_MODEL || "claude-sonnet-5-5",
 
   dbPath: process.env.DB_PATH || "./data/agent.db",

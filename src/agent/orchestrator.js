@@ -1,13 +1,11 @@
 "use strict";
 
-const Anthropic = require("@anthropic-ai/sdk");
-const config = require("../config");
 const sessions = require("../db/sessions");
 const zupaApi = require("../zupaApiClient");
 const { tools } = require("./tools");
 const { buildSystemPrompt } = require("./prompt");
+const provider = require("./providers");
 
-const anthropic = new Anthropic({ apiKey: config.anthropicApiKey });
 const toolDefinitions = Object.values(tools).map((t) => t.definition);
 
 const MAX_TOOL_ROUNDS = 8; // guards against a runaway tool-call loop
@@ -25,28 +23,24 @@ async function runTurn(phoneNumber, userText) {
       break;
     }
 
-    const messages = sessions.getRecentMessages(phoneNumber);
-    const response = await anthropic.messages.create({
-      model: config.anthropicModel,
-      max_tokens: 1024,
-      system: buildSystemPrompt(),
-      tools: toolDefinitions,
-      messages,
+    const apiMessages = provider.buildApiMessages(sessions.getRecentMessages(phoneNumber));
+    const result = await provider.runTurn({
+      systemPrompt: buildSystemPrompt(),
+      toolDefinitions,
+      messages: apiMessages,
     });
 
-    sessions.appendMessage(phoneNumber, "assistant", response.content);
+    sessions.appendMessage(phoneNumber, result.assistantRow.role, result.assistantRow.content);
 
-    const textBlock = response.content.find((b) => b.type === "text");
-    if (textBlock) finalText = textBlock.text;
+    if (result.text) finalText = result.text;
 
-    if (response.stop_reason !== "tool_use") {
+    if (!result.hasToolCalls) {
       break; // model gave its final reply for this turn
     }
 
-    const toolUseBlocks = response.content.filter((b) => b.type === "tool_use");
     const toolResults = [];
-    for (const block of toolUseBlocks) {
-      const tool = tools[block.name];
+    for (const call of result.toolCalls) {
+      const tool = tools[call.name];
       let output;
       try {
         // Re-fetch so a tool reads the state left by the one that just ran
@@ -54,20 +48,18 @@ async function runTurn(phoneNumber, userText) {
         // get_cart_summary in the same turn).
         const freshSession = sessions.getSession(phoneNumber);
         output = tool
-          ? await tool.run(block.input, { phoneNumber, session: freshSession })
-          : { error: `Unknown tool: ${block.name}` };
-        console.log(`[agent] ${phoneNumber} tool ${block.name}(${JSON.stringify(block.input)}) -> ${JSON.stringify(output).slice(0, 300)}`);
+          ? await tool.run(call.input, { phoneNumber, session: freshSession })
+          : { error: `Unknown tool: ${call.name}` };
+        console.log(`[agent] ${phoneNumber} tool ${call.name}(${JSON.stringify(call.input)}) -> ${JSON.stringify(output).slice(0, 300)}`);
       } catch (error) {
-        console.error(`[agent] tool ${block.name} failed:`, error.message);
+        console.error(`[agent] tool ${call.name} failed:`, error.message);
         output = { error: error.message || "Tool call failed" };
       }
-      toolResults.push({
-        type: "tool_result",
-        tool_use_id: block.id,
-        content: JSON.stringify(output),
-      });
+      toolResults.push({ id: call.id, output });
     }
-    sessions.appendMessage(phoneNumber, "user", toolResults);
+
+    const resultRow = provider.toolResultRow(toolResults);
+    sessions.appendMessage(phoneNumber, resultRow.role, resultRow.content);
   }
 
   return finalText;
