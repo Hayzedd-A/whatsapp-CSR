@@ -140,13 +140,26 @@ async function handleInboundMessage(phoneNumber, { text, mediaUrl, mediaType, wa
   }
 
   const latestSession = sessions.getSession(phoneNumber);
-  await zupaApi.sendMessage({
-    to: phoneNumber,
-    orderNumber: latestSession.orderNumber,
-    message: replyText,
-    replyMessageId: waMessageId,
-    messageId: `agent-${phoneNumber}-${Date.now()}`,
-  });
+  try {
+    await zupaApi.sendMessage({
+      to: phoneNumber,
+      orderNumber: latestSession.orderNumber,
+      message: replyText,
+      replyMessageId: waMessageId,
+      messageId: `agent-${phoneNumber}-${Date.now()}`,
+    });
+  } catch (error) {
+    // zupa-api now dispatches to WhatsApp synchronously (no queue to retry
+    // later on our behalf), so a failure here is real and needs a real
+    // reply — hand off rather than silently leaving the customer without
+    // any answer to their last message.
+    console.error(`[agent] send failed for ${phoneNumber}:`, error.message);
+    sessions.updateSession(phoneNumber, {
+      mode: "human_handoff",
+      escalatedAt: Date.now(),
+      escalationReason: `Failed to deliver AI reply: ${error.message}`,
+    });
+  }
 }
 
 module.exports = { handleInboundMessage };
