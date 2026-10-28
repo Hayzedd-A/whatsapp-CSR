@@ -171,10 +171,10 @@ const tools = {
     },
   },
 
-  create_order: {
+  confirm_order_details: {
     definition: {
-      name: "create_order",
-      description: "Create the order once the customer has confirmed their cart and given delivery/pickup details. Safe to call again with the same session if it fails partway or if you're attaching a payment reference later — it won't create a duplicate.",
+      name: "confirm_order_details",
+      description: "Lock in the cart and delivery/pickup details once the customer has confirmed them, and get the exact total to quote for payment. This does NOT create an order — nothing is created in the system yet. The order is only ever created by check_payment, and only if it finds a matching transfer. Call this, read the returned total back to the customer with the payment instructions, and do not call create anything else until they say they've paid.",
       input_schema: {
         type: "object",
         properties: {
@@ -182,7 +182,8 @@ const tools = {
           customerPhoneNumber: { type: "string", description: "The customer's WhatsApp number, digits only." },
           isPickup: { type: "boolean" },
           pickupBranchName: { type: "string", description: "Required if isPickup is true — from get_pickup_branches." },
-          deliveryZoneId: { type: "string", description: "Required if isPickup is false — the id of the matched zone/tier from search_delivery_zones. Confirm the zone name and its delivery fee with the customer before calling this." },
+          deliveryZoneId: { type: "string", description: "Required if isPickup is false — the id of the matched zone/tier from search_delivery_zones." },
+          deliveryZoneName: { type: "string", description: "The matched zone's name, for your own reference when confirming with the customer." },
           deliveryAddress: { type: "string", description: "Required if isPickup is false — the customer's actual street address/landmark within that zone, for the rider." },
           recipientName: { type: "string", description: "Only if this is a gift order for someone else." },
           recipientPhoneNumber: { type: "string" },
@@ -194,7 +195,7 @@ const tools = {
     },
     run: async (input, ctx) => {
       if (!ctx.session.cart.length) {
-        return { error: "The cart is empty — add items before creating the order." };
+        return { error: "The cart is empty — add items before confirming order details." };
       }
       if (!input.isPickup && !input.deliveryZoneId) {
         return { error: "deliveryZoneId is required for delivery orders — call search_delivery_zones first." };
@@ -203,76 +204,117 @@ const tools = {
         return { error: "pickupBranchName is required for pickup orders — call get_pickup_branches first." };
       }
 
-      // Stable per-session reference, so calling this again (e.g. to attach
-      // a payment reference after check_payment matches) updates the same
-      // order instead of creating a second one.
-      const clientReference = ctx.session.clientReference || `wa-${ctx.phoneNumber}-${ctx.session.createdAt}`;
+      let deliveryFee = 0;
+      if (!input.isPickup) {
+        // Re-resolved here rather than trusting whatever price the model
+        // last saw from search_delivery_zones — the fee that determines how
+        // much the customer must pay has to come from the live source,
+        // same discipline as menu prices.
+        const deliveryTypes = await zupaApi.fetchDeliveryTypes();
+        const match = deliveryTypes.find((dt) => dt.id === input.deliveryZoneId);
+        if (!match) {
+          return { error: "That delivery zone id is no longer valid — call search_delivery_zones again." };
+        }
+        deliveryFee = match.price;
+      }
 
-      const result = await zupaApi.createOrder({
-        customer: { name: input.customerName, phoneNumber: input.customerPhoneNumber },
-        order: {
-          items: ctx.session.cart.map((i) => ({ productId: i.productId, quantity: i.quantity })),
-          couponCode: input.couponCode || undefined,
-          specialNote: input.specialNote || "",
-        },
-        address: {
-          isPickup: !!input.isPickup,
-          pickupStore: input.pickupBranchName,
-          deliveryAddress: input.deliveryAddress,
-          cityId: input.isPickup ? undefined : input.deliveryZoneId,
-        },
-        recipient: input.recipientName
-          ? { name: input.recipientName, phoneNumber: input.recipientPhoneNumber }
-          : null,
-        clientReference,
-      });
+      const pendingOrder = {
+        customerName: input.customerName,
+        customerPhoneNumber: input.customerPhoneNumber,
+        isPickup: !!input.isPickup,
+        pickupBranchName: input.pickupBranchName || null,
+        deliveryZoneId: input.isPickup ? null : input.deliveryZoneId,
+        deliveryZoneName: input.deliveryZoneName || null,
+        deliveryFee,
+        deliveryAddress: input.deliveryAddress || null,
+        recipientName: input.recipientName || null,
+        recipientPhoneNumber: input.recipientPhoneNumber || null,
+        couponCode: input.couponCode || null,
+        specialNote: input.specialNote || "",
+      };
 
-      sessions.updateSession(ctx.phoneNumber, {
-        orderId: result.orderId,
-        orderNumber: result.orderNumber,
-        clientReference,
-      });
+      const session = sessions.updateSession(ctx.phoneNumber, { pendingOrder });
+      const subtotal = cartSubtotal(session.cart);
 
-      return result;
+      return {
+        cart: session.cart,
+        subtotal,
+        deliveryFee,
+        total: subtotal + deliveryFee,
+        note: "Nothing has been created yet. Read this total back to the customer with the payment instructions, then call check_payment only after they say they've paid.",
+      };
     },
   },
 
   check_payment: {
     definition: {
       name: "check_payment",
-      description: "Check for a matching bank transfer after the customer says they've paid, and attach it to the order if found. The customer must have transferred the exact order total using their own name.",
-      input_schema: {
-        type: "object",
-        properties: {
-          customerName: { type: "string" },
-          totalPrice: { type: "number", description: "The order's grand total — ask for it from get_cart_summary/create_order's result if unsure." },
-        },
-        required: ["customerName", "totalPrice"],
-      },
+      description: "Check for a matching bank transfer after the customer says they've paid. This is the ONLY action that ever creates the order — it does so automatically, with the payment already attached, but only if a match is found. Requires confirm_order_details to have been called first. Safe to call again if it doesn't find a match the first time.",
+      input_schema: { type: "object", properties: {} },
     },
     run: async (input, ctx) => {
-      const result = await zupaApi.verifyPayment({
-        customerName: input.customerName,
-        totalPrice: input.totalPrice,
-      });
-
-      if (result.matched && ctx.session.orderId) {
-        const transactionRef = result.combined
-          ? result.payments.map((p) => p.transactionRef)
-          : result.transactionRef;
-
-        await zupaApi.createOrder({
-          customer: { name: input.customerName, phoneNumber: ctx.phoneNumber },
-          order: { items: ctx.session.cart.map((i) => ({ productId: i.productId, quantity: i.quantity })), paymentReference: transactionRef },
-          address: {},
-          recipient: null,
-          clientReference: ctx.session.clientReference,
-        });
-
-        sessions.updateSession(ctx.phoneNumber, { paymentStatus: "paid" });
+      if (ctx.session.orderId) {
+        // Already created by an earlier successful call — never re-create
+        // or re-verify.
+        return { matched: true, alreadyCreated: true, orderNumber: ctx.session.orderNumber };
       }
 
-      return result;
+      const pending = ctx.session.pendingOrder;
+      if (!pending) {
+        return { error: "Call confirm_order_details first — there's nothing to check payment against yet." };
+      }
+
+      const subtotal = cartSubtotal(ctx.session.cart);
+      const totalPrice = subtotal + pending.deliveryFee;
+
+      const result = await zupaApi.verifyPayment({
+        customerName: pending.customerName,
+        totalPrice,
+        deliveryPrice: pending.deliveryFee,
+        couponCode: pending.couponCode || undefined,
+      });
+
+      if (!result.matched) {
+        return result;
+      }
+
+      const transactionRef = result.combined
+        ? result.payments.map((p) => p.transactionRef)
+        : result.transactionRef;
+
+      // The one and only place an order is ever created in this whole
+      // service — and only reached after a payment match, with the
+      // reference attached from the start. No code path exists that calls
+      // zupaApi.createOrder without one.
+      const clientReference = ctx.session.clientReference || `wa-${ctx.phoneNumber}-${ctx.session.createdAt}`;
+      const orderResult = await zupaApi.createOrder({
+        customer: { name: pending.customerName, phoneNumber: pending.customerPhoneNumber },
+        order: {
+          items: ctx.session.cart.map((i) => ({ productId: i.productId, quantity: i.quantity })),
+          paymentReference: transactionRef,
+          couponCode: pending.couponCode || undefined,
+          specialNote: pending.specialNote || "",
+        },
+        address: {
+          isPickup: pending.isPickup,
+          pickupStore: pending.pickupBranchName,
+          deliveryAddress: pending.deliveryAddress,
+          cityId: pending.isPickup ? undefined : pending.deliveryZoneId,
+        },
+        recipient: pending.recipientName
+          ? { name: pending.recipientName, phoneNumber: pending.recipientPhoneNumber }
+          : null,
+        clientReference,
+      });
+
+      sessions.updateSession(ctx.phoneNumber, {
+        orderId: orderResult.orderId,
+        orderNumber: orderResult.orderNumber,
+        clientReference,
+        paymentStatus: "paid",
+      });
+
+      return { ...result, orderCreated: true, orderNumber: orderResult.orderNumber };
     },
   },
 

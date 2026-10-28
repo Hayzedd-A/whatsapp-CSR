@@ -6,7 +6,11 @@ See `/home/hayzedd/.claude/plans/cuddly-wishing-fountain.md` for the full design
 
 ## What this service does
 
-Receives inbound WhatsApp messages forwarded from zupa-api, runs an LLM (Claude) tool-calling loop to build a cart, confirm it, collect delivery/pickup details, create the order, and check for a matching bank-transfer payment — handing off to a human (via zupa-crm) for anything it shouldn't handle itself: complaints, refunds, modifying an existing order, bulk/corporate requests, or whenever it isn't confident.
+Receives inbound WhatsApp messages forwarded from zupa-api, runs an LLM (Claude) tool-calling loop to build a cart, confirm it, collect delivery/pickup details, verify a bank-transfer payment, and only then create the order — handing off to a human (via zupa-crm) for anything it shouldn't handle itself: complaints, refunds, modifying an existing order, bulk/corporate requests, or whenever it isn't confident.
+
+## Order creation is payment-gated — on purpose, enforced in code
+
+There is exactly one place in this entire service that calls zupa-api's order-creation endpoint: inside `check_payment`'s executor (`src/agent/tools.js`), and only in the branch where `verifyPayment` reports a match. No other tool, and no path through `confirm_order_details`, ever creates an order. This isn't just prompt guidance (an earlier version relied on that, and it failed in testing — the model created an order before even showing the customer the payment details) — it's structural: `confirm_order_details` only writes to the local SQLite session (`pendingOrder`), and the order payload used by `check_payment` is built entirely from that locally-held state plus the payment reference it just matched, so there's no code path left that can call `zupaApi.createOrder` without a payment reference already in hand.
 
 ## Setup
 
@@ -75,7 +79,7 @@ SQLite (`better-sqlite3`), not Postgres — see the plan doc's Workstream B sect
 
 Both pickup and home-delivery are now wired end-to-end:
 - **Pickup**: `get_pickup_branches` → `GET /customer-requests/stores/:storeId/branches`, resolved into an order via `createBotOrder`'s existing `findActiveBranchByText`/`pickupDeliveryTypeId` logic — the same mechanism `slack-bot/order/new` already uses in production.
-- **Delivery**: `search_delivery_zones` → `GET /auth/stores/:storeId`'s `delivery_types`, classified with the exact same name-pattern rules the Slack bot uses (`src/agent/deliveryZones.js`, mirroring Slackbot's `src/data/loader.js`) into named zones vs. Uber/Bolt on-demand tiers, surge variants excluded. The matched zone's `id` becomes `address.cityId` on `create_order`.
+- **Delivery**: `search_delivery_zones` → `GET /auth/stores/:storeId`'s `delivery_types`, classified with the exact same name-pattern rules the Slack bot uses (`src/agent/deliveryZones.js`, mirroring Slackbot's `src/data/loader.js`) into named zones vs. Uber/Bolt on-demand tiers, surge variants excluded. The matched zone's `id` becomes `address.cityId` once an order is actually created (see "Order creation is payment-gated" below).
 
 The zone matching itself is a simple substring/token match (`searchZones` in `deliveryZones.js`), not the Slack bot's full fuzzy/alias matcher backing its live-typeahead UI — that's a reasonable v1 given the LLM confirms the matched zone name with the customer before proceeding either way. Worth revisiting if the CSR chat-export review shows customers describing areas in ways this simple match handles poorly.
 

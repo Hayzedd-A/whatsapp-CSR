@@ -23,6 +23,7 @@ db.exec(`
     cart TEXT NOT NULL DEFAULT '[]',
     deliveryAddress TEXT,
     recipient TEXT,
+    pendingOrder TEXT,
     orderId TEXT,
     orderNumber TEXT,
     clientReference TEXT,
@@ -50,5 +51,14 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_messages_phone_created
     ON messages (phoneNumber, createdAt);
 `);
+
+// Additive migration for databases created before `pendingOrder` existed —
+// CREATE TABLE IF NOT EXISTS above is a no-op against an existing table, so
+// this covers already-deployed DB files.
+try {
+  db.exec(`ALTER TABLE sessions ADD COLUMN pendingOrder TEXT;`);
+} catch (e) {
+  if (!/duplicate column/i.test(e.message)) throw e;
+}
 
 module.exports = db;

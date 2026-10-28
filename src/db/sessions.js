@@ -11,6 +11,7 @@ function parseSession(row) {
     cart: JSON.parse(row.cart || "[]"),
     deliveryAddress: row.deliveryAddress ? JSON.parse(row.deliveryAddress) : null,
     recipient: row.recipient ? JSON.parse(row.recipient) : null,
+    pendingOrder: row.pendingOrder ? JSON.parse(row.pendingOrder) : null,
   };
 }
 
@@ -35,15 +36,15 @@ function getOrCreateSession(phoneNumber) {
 }
 
 // `patch` may include: mode, cart (array), deliveryAddress (object|null),
-// recipient (object|null), orderId, orderNumber, clientReference,
-// paymentStatus, escalatedAt (ms epoch|null), escalationReason.
+// recipient (object|null), pendingOrder (object|null), orderId, orderNumber,
+// clientReference, paymentStatus, escalatedAt (ms epoch|null), escalationReason.
 function updateSession(phoneNumber, patch) {
   const current = getOrCreateSession(phoneNumber);
   const next = { ...current, ...patch };
 
   db.prepare(
     `UPDATE sessions SET
-       mode = ?, cart = ?, deliveryAddress = ?, recipient = ?,
+       mode = ?, cart = ?, deliveryAddress = ?, recipient = ?, pendingOrder = ?,
        orderId = ?, orderNumber = ?, clientReference = ?, paymentStatus = ?,
        escalatedAt = ?, escalationReason = ?, lastMessageAt = ?, updatedAt = ?
      WHERE phoneNumber = ?`,
@@ -52,6 +53,7 @@ function updateSession(phoneNumber, patch) {
     JSON.stringify(next.cart || []),
     next.deliveryAddress ? JSON.stringify(next.deliveryAddress) : null,
     next.recipient ? JSON.stringify(next.recipient) : null,
+    next.pendingOrder ? JSON.stringify(next.pendingOrder) : null,
     next.orderId || null,
     next.orderNumber || null,
     next.clientReference || null,
