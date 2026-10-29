@@ -46,6 +46,12 @@ module.exports = {
   outLogPath: process.env.OUT_LOG_PATH || "./logs/out.log",
   errorLogPath: process.env.ERROR_LOG_PATH || "./logs/error.log",
 
+  // Optional — enables the /test-chat dev UI (same hidden-unless-configured
+  // behavior as LOGS_ACCESS_KEY, and deliberately its own separate secret
+  // for the same reason: this one lands in a browser URL bar/history too).
+  // Runs the real agent logic but never sends anything over WhatsApp.
+  testChatAccessKey: process.env.TEST_CHAT_ACCESS_KEY || null,
+
   payment: {
     bankName: process.env.PAYMENT_BANK_NAME || "",
     accountNumber: process.env.PAYMENT_ACCOUNT_NUMBER || "",

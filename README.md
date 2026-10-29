@@ -77,6 +77,10 @@ Set `LOGS_ACCESS_KEY` in `.env` (a value separate from `WHATSAPP_AGENT_API_KEY` 
 
 This reads PM2's own log files, so it only shows anything once PM2 is actually running the app with `ecosystem.config.js` (not `node src/index.js` directly, and not `pm2 start src/index.js` without the ecosystem file — neither of those writes to the paths this expects).
 
+## Test chat (dev UI)
+
+Set `TEST_CHAT_ACCESS_KEY` in `.env` (own separate secret, same reasoning as `LOGS_ACCESS_KEY` — see `.env.example`), then visit `/test-chat` — same hidden-unless-configured pattern (404 when unset). It's a plain chat box backed by `POST /test-chat/message`, which runs the exact real conversation (`agent/orchestrator.js`'s `runTestTurn`: same prompt, same tools, same session state, same escalation/resume-offer logic) but captures the reply instead of ever calling `zupaApi.sendMessage` — no Graph API round trip, no real phone number needed, and a turn that fails or escalates behaves exactly as it would for a real customer. Menu/cart/payment/order-creation tool calls still hit the real zupa-api, same as testing over WhatsApp today — this only replaces the final "send to WhatsApp" step. Each browser tab gets its own session id (stored in `localStorage`, namespaced `test-<id>` so it can never collide with a real phone number); "New conversation" wipes that session's state and local message history (`sessions.resetSession`) to start clean. The sidebar shows live `mode`/cart/order/escalation state, which is the main reason this beats testing over WhatsApp for anything beyond a smoke test.
+
 ## Session storage
 
 SQLite (`better-sqlite3`), not Postgres — see the plan doc's Workstream B section for why. `DB_PATH` **must** point at a persistent volume in any deployed environment; losing that file loses every in-flight cart and session.

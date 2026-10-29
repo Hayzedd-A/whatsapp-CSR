@@ -98,6 +98,15 @@ function updateSession(phoneNumber, patch) {
   return getSession(phoneNumber);
 }
 
+// Wipes a session and its local message history entirely — used by the
+// /test-chat dev UI's "new conversation" action. Never called from any real
+// WhatsApp code path; a real customer's session is only ever updated, not
+// deleted.
+function resetSession(phoneNumber) {
+  db.prepare("DELETE FROM sessions WHERE phoneNumber = ?").run(phoneNumber);
+  db.prepare("DELETE FROM messages WHERE phoneNumber = ?").run(phoneNumber);
+}
+
 function touchLastMessageAt(phoneNumber) {
   db.prepare("UPDATE sessions SET lastMessageAt = ? WHERE phoneNumber = ?").run(
     Date.now(),
@@ -137,6 +146,7 @@ module.exports = {
   getSession,
   getOrCreateSession,
   updateSession,
+  resetSession,
   touchLastMessageAt,
   appendMessage,
   getRecentMessages,

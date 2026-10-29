@@ -45,6 +45,21 @@ async function notifyHandoffChange(phoneNumber, mode, reason) {
   }
 }
 
+// The side effect of "say this to the customer" — defaults to the real
+// WhatsApp send. A different one gets passed in from routes/testChat.js so
+// the exact same turn/escalation/handoff logic below can be exercised from
+// the browser-based test UI without ever touching the Graph API (and
+// without needing a real phone number) — it just captures the text instead.
+const defaultDeliver = async (phoneNumber, message, { waMessageId, orderNumber } = {}) => {
+  await zupaApi.sendMessage({
+    to: phoneNumber,
+    orderNumber,
+    message,
+    replyMessageId: waMessageId,
+    messageId: `agent-${phoneNumber}-${Date.now()}`,
+  });
+};
+
 const RESUME_OFFER_TEXT =
   "Looks like your query's been fully handled — would you like me to help you with anything else, like placing an order?";
 // Don't offer if a human has been active this recently — a proactive
@@ -111,7 +126,7 @@ async function runTurn(phoneNumber, userText) {
 // Called from the webhook route, asynchronously (not awaited by the HTTP
 // response back to zupa-api) — LLM latency should never hold up the
 // webhook's own response.
-async function handleInboundMessage(phoneNumber, { text, mediaUrl, mediaType, waMessageId }) {
+async function handleInboundMessage(phoneNumber, { text, mediaUrl, mediaType, waMessageId, deliver = defaultDeliver }) {
   const session = sessions.getOrCreateSession(phoneNumber);
   sessions.touchLastMessageAt(phoneNumber);
 
@@ -164,13 +179,7 @@ async function handleInboundMessage(phoneNumber, { text, mediaUrl, mediaType, wa
 
   const latestSession = sessions.getSession(phoneNumber);
   try {
-    await zupaApi.sendMessage({
-      to: phoneNumber,
-      orderNumber: latestSession.orderNumber,
-      message: replyText,
-      replyMessageId: waMessageId,
-      messageId: `agent-${phoneNumber}-${Date.now()}`,
-    });
+    await deliver(phoneNumber, replyText, { waMessageId, orderNumber: latestSession.orderNumber });
     console.log(`[agent] ${phoneNumber} replied: "${replyText.slice(0, 200)}"`);
   } catch (error) {
     // zupa-api now dispatches to WhatsApp synchronously (no queue to retry
@@ -198,7 +207,7 @@ async function handleInboundMessage(phoneNumber, { text, mediaUrl, mediaType, wa
 //     classification — not a vague confidence score — whether this message
 //     looks like a fresh, self-contained request unrelated to whatever the
 //     human was handling, and if so, offer to resume (never silently).
-async function handleHandoffMessage(phoneNumber, { text, waMessageId }) {
+async function handleHandoffMessage(phoneNumber, { text, waMessageId, deliver = defaultDeliver }) {
   const session = sessions.getSession(phoneNumber);
   if (!session || session.mode !== "human_handoff") return; // overtaken by something else already
 
@@ -226,7 +235,7 @@ async function handleHandoffMessage(phoneNumber, { text, waMessageId }) {
     if (answer === "yes") {
       sessions.updateSession(phoneNumber, { mode: "ai_ordering" }); // also clears resumeOfferedAt/Declined
       await notifyHandoffChange(phoneNumber, "ai_ordering", "Customer confirmed — AI resumed");
-      await handleInboundMessage(phoneNumber, { text, waMessageId });
+      await handleInboundMessage(phoneNumber, { text, waMessageId, deliver });
     } else {
       // "no" or "unclear" — stop asking for the rest of this handoff
       // episode (a fresh escalation later gets its own fresh offer cycle).
@@ -277,11 +286,7 @@ async function handleHandoffMessage(phoneNumber, { text, waMessageId }) {
   }
 
   try {
-    await zupaApi.sendMessage({
-      to: phoneNumber,
-      message: RESUME_OFFER_TEXT,
-      messageId: `agent-offer-${phoneNumber}-${Date.now()}`,
-    });
+    await deliver(phoneNumber, RESUME_OFFER_TEXT, {});
     sessions.updateSession(phoneNumber, { resumeOfferedAt: Date.now() });
     console.log(`[agent] ${phoneNumber} sent resume offer`);
   } catch (error) {
@@ -289,4 +294,35 @@ async function handleHandoffMessage(phoneNumber, { text, waMessageId }) {
   }
 }
 
-module.exports = { handleInboundMessage, handleHandoffMessage };
+// Drives the exact same turn/escalation/handoff logic as the real WhatsApp
+// path (same prompt, tools, provider, session state), but captures the
+// reply instead of sending it — used by the /test-chat dev UI
+// (routes/testChat.js) so manual testing is instant and never risks a real
+// Graph API send to a placeholder id. `testId` is namespaced by the caller
+// (routes/testChat.js prefixes it) so it can never collide with a real
+// phone number.
+async function runTestTurn(testId, text) {
+  let captured = null;
+  const deliver = async (phoneNumber, message) => {
+    captured = message;
+  };
+
+  const session = sessions.getOrCreateSession(testId);
+  if (session.mode === "human_handoff") {
+    await handleHandoffMessage(testId, { text, deliver });
+  } else {
+    await handleInboundMessage(testId, { text, deliver });
+  }
+
+  const latest = sessions.getSession(testId);
+  return {
+    reply: captured,
+    mode: latest.mode,
+    escalationReason: latest.escalationReason,
+    cart: latest.cart,
+    pendingOrder: latest.pendingOrder,
+    orderNumber: latest.orderNumber,
+  };
+}
+
+module.exports = { handleInboundMessage, handleHandoffMessage, runTestTurn };
